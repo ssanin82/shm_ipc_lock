@@ -1,0 +1,2 @@
+[console_scripts]
+ipc-lock-demo = shm_ipc_lock.demo:main
