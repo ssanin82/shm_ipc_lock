@@ -49,48 +49,54 @@ def build_c_shared_lib(tmpdir: str):
     return so_path
 
 # ---------- IPC Spinlock class ----------
-class IPCSpinLock:
+class ShmLock:
     """
-    Simple inter-process spinlock using a 1-byte shared-memory flag.
-      0 = unlocked
-      1 = locked
-    The CAS operation sets 0 -> 1 atomically. Release sets the byte to 0 atomically.
+    Inter-process spinlock using a flag byte at a specific offset in shared memory.
+    If shared memory file does not exist and create=True, it will be created.
+
+    Args:
+        shm_path (str): Path to shared memory file, e.g. /dev/shm/myregion
+        offset (int): Byte offset in shared memory to use for the flag
+        create (bool): If True, create file if it doesn't exist
+        so_path (str): Optional path to prebuilt atomic CAS .so
     """
-    def __init__(self, name: str, so_path: str = None):
-        """
-        name: name for shared memory file under /dev/shm (e.g. "mylock")
-        so_path: optional path to prebuilt shared library; if None the module will compile one
-        """
-        self.name = name
-        self.shm_path = f"/dev/shm/{name}.ipcflag"
-        self.size = 1  # single byte
-        self._ensure_shm_file()
+    def __init__(
+        self,
+        shm_path: str,
+        offset: int = 0,
+        create: bool = True,
+        so_path: str = None
+    ):
+        self.shm_path = shm_path
+        self.offset = offset
+        self.size = offset + 1  # we need at least 1 byte past the offset
+        self._ensure_shm_file(create)
         self.mm = self._open_mmap()
-        # build/load C lib if needed
+
+        # Build or load atomic CAS library
         if so_path is None:
             tmpdir = tempfile.mkdtemp(prefix="ipc_cas_")
             so_path = build_c_shared_lib(tmpdir)
         self.lib = ctypes.CDLL(so_path)
-        # define argument/result types
         self.lib.cas_u8.argtypes = (ctypes.POINTER(ctypes.c_uint8), ctypes.c_uint8, ctypes.c_uint8)
         self.lib.cas_u8.restype = ctypes.c_int
         self.lib.store_u8.argtypes = (ctypes.POINTER(ctypes.c_uint8), ctypes.c_uint8)
         self.lib.store_u8.restype = None
 
-        # Get pointer to the mmap buffer as uint8 pointer
-        buf = (ctypes.c_uint8 * 1).from_buffer(self.mm)
+        # Get pointer to the byte at the specified offset
+        buf = (ctypes.c_uint8 * 1).from_buffer(self.mm, self.offset)
         self.ptr = ctypes.cast(buf, ctypes.POINTER(ctypes.c_uint8))
 
-    def _ensure_shm_file(self):
-        """Create the backing file if it doesn't exist and set size to 1 byte."""
-        fd = os.open(self.shm_path, os.O_RDWR | os.O_CREAT, 0o600)
+    def _ensure_shm_file(self, create: bool):
+        """Ensure shared memory file exists and is large enough."""
+        flags = os.O_RDWR | (os.O_CREAT if create else 0)
+        fd = os.open(self.shm_path, flags, 0o600)
         try:
-            # Ensure size 1
-            cur = os.fstat(fd).st_size
-            if cur < self.size:
+            st = os.fstat(fd)
+            if st.st_size < self.size:
+                if not create:
+                    raise ValueError(f"Shared memory {self.shm_path} too small for offset {self.offset}")
                 os.ftruncate(fd, self.size)
-                # initialize to 0
-                os.write(fd, b'\x00')
                 os.lseek(fd, 0, os.SEEK_SET)
         finally:
             os.close(fd)
@@ -98,42 +104,33 @@ class IPCSpinLock:
     def _open_mmap(self):
         fd = os.open(self.shm_path, os.O_RDWR)
         try:
-            mm = mmap.mmap(fd, self.size, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE)
-            return mm
+            return mmap.mmap(fd, self.size, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE)
         finally:
             os.close(fd)
 
     def acquire(self, timeout=None):
         """
-        Try to acquire the lock by atomically setting 0 -> 1 with CAS.
-        Spins with exponential backoff.
-        Returns True on acquired, False on timeout.
+        Try to acquire lock (0 -> 1). Returns True on success, False on timeout.
         """
         start = time.time()
-        backoff = 0.00001  # 10us initial
-        max_backoff = 0.01  # 10ms
+        backoff = 0.00001
         while True:
-            # Attempt CAS: expected 0 -> desired 1
             res = self.lib.cas_u8(self.ptr, ctypes.c_uint8(0), ctypes.c_uint8(1))
             if res:
-                # acquired
                 return True
-            # not acquired, check timeout
-            if timeout is not None and (time.time() - start) >= timeout:
+            if timeout and (time.time() - start) >= timeout:
                 return False
-            # exponential backoff + jitter
-            time.sleep(backoff * (0.5 + 0.5 * os.getpid() % 2))  # tiny jitter based on pid
-            backoff = min(max_backoff, backoff * 2)
+            time.sleep(backoff)
+            backoff = min(0.01, backoff * 2)
 
     def release(self):
         """Release the lock by atomically storing 0."""
         self.lib.store_u8(self.ptr, ctypes.c_uint8(0))
 
     def is_locked(self):
-        """Non-atomic read of current flag (best-effort)."""
-        self.mm.seek(0)
-        b = self.mm.read(1)
-        return b != b'\x00'
+        """Check if flag is nonzero (non-atomic read - best effort)."""
+        self.mm.seek(self.offset)
+        return self.mm.read(1) != b'\x00'
 
     def close(self):
         try:
@@ -142,41 +139,40 @@ class IPCSpinLock:
             pass
 
 # ---------------- Example usage with multiprocessing ----------------
-def worker(name, so_path, worker_id, hold_time):
-    lock = IPCSpinLock(name, so_path=so_path)
-    print(f"[worker {worker_id}] trying to acquire")
-    got = lock.acquire(timeout=10.0)
-    if not got:
-        print(f"[worker {worker_id}] failed to acquire (timeout)")
+def worker(name, offset, so_path, worker_id, hold_time):
+    lock = ShmLock(name, offset=offset, create=False, so_path=so_path)
+    print(f"[worker {worker_id}] trying to acquire...")
+    if not lock.acquire(timeout=5.0):
+        print(f"[worker {worker_id}] timeout waiting for lock")
         return
-    print(f"[worker {worker_id}] acquired, doing work for {hold_time:.2f}s")
+    print(f"[worker {worker_id}] acquired -> working {hold_time:.1f}s")
     time.sleep(hold_time)
     lock.release()
     print(f"[worker {worker_id}] released")
     lock.close()
 
-def demo():
-    # Build the shared library once, pass path to each child
-    tmpdir = tempfile.mkdtemp(prefix="ipc_cas_demo_")
+def test():
+    shm_path = "/dev/shm/ipc_region_demo"
+    offset = 128  # place the lock flag at byte offset 128
+    tmpdir = tempfile.mkdtemp(prefix="ipc_demo_")
     so_path = build_c_shared_lib(tmpdir)
 
-    name = "demo_ipc_lock_example"
-    # Ensure shm file removed before demo start (optional):
-    shm_path = f"/dev/shm/{name}.ipcflag"
-    try:
-        os.remove(shm_path)
-    except FileNotFoundError:
-        pass
+    # Create a shared memory region large enough
+    fd = os.open(shm_path, os.O_RDWR | os.O_CREAT, 0o600)
+    os.ftruncate(fd, offset + 1)
+    os.close(fd)
 
-    # Start two processes that contend for the lock
-    p1 = Process(target=worker, args=(name, so_path, 1, 2.0))
-    p2 = Process(target=worker, args=(name, so_path, 2, 1.0))
+    print(f"Shared memory: {shm_path} (flag at offset {offset})")
+
+    # Start processes sharing the same region
+    p1 = Process(target=worker, args=(shm_path, offset, so_path, 1, 2.0))
+    p2 = Process(target=worker, args=(shm_path, offset, so_path, 2, 1.0))
     p1.start()
-    time.sleep(0.1)  # stagger start so contention is likely
+    time.sleep(0.1)
     p2.start()
     p1.join()
     p2.join()
-    print("Demo finished.")
+    print("Demo complete.")
 
 if __name__ == "__main__":
-    demo()
+    test()
