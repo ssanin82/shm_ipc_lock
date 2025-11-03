@@ -1,4 +1,4 @@
-# A Simple Spin Lock for Python IPC 
+# A Simple Atomic CAS-Based Spin Lock for Python IPC 
 
 Python's multiprocessing.shared_memory module, introduced in Python 3.8, provides a way to implement named shared memory for inter-process communication. It is somewhat analogous to the POSIX shared memory API.
 

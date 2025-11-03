@@ -1,0 +1,52 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+src/shm_ipc_lock.egg-info/
+src/shm_ipc_lock/__pycache__/
+
+# C extensions
+*.so
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+*.wheel
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Virtual environments
+venv/
+env/
+.venv/
+.env/
+
+# PyCharm / JetBrains
+.idea/
+*.iml
+*.iws
+
+# VS Code
+.vscode/
+
+# macOS
+.DS_Store
+
+# Test / coverage
+.coverage
+htmlcov/
+*.cover
+*.py,cover
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Logs
+*.log
+
+# Other
+*.swp

@@ -3,7 +3,7 @@ import time
 import tempfile
 from multiprocessing import Process
 
-from .ipc_lock import ShmLock, build_c_shared_lib
+from shm_ipc_lock import ShmLock, build_c_shared_lib
 
 """
 Demo script for the IPC spinlock with shared memory offset.
