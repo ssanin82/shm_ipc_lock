@@ -12,7 +12,6 @@ import ctypes
 import subprocess
 import time
 from multiprocessing import Process
-from pathlib import Path
 
 # ---------- C code for atomic CAS and store ----------
 C_CODE = r'''

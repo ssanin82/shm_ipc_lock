@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shm_ipc_lock"
+version = "0.1.0"
+description = "Inter-process spinlock using shared memory and compare-and-swap implemented in C for Python."
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [
+  { name = "Sergiy Sanin", email = "sanin_sergiy@yahoo.com" }
+]
+
+keywords = ["ipc", "lock", "shared-memory", "spinlock", "atomic", "compare-and-swap"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: C",
+  "Operating System :: POSIX :: Linux",
+  "Topic :: System :: Operating System Kernels",
+  "Topic :: Software Development :: Libraries"
+]
+
+dependencies = [
+  # standard library only; keep empty unless adding runtime deps
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.0",
+  "mypy>=1.0",
+  "black>=24.0",
+  "ruff>=0.6.0",
+]
+examples = [
+  "pytest",
+]
+
+[project.scripts]
+ipc-lock-demo = "shm_ipc_lock.demo:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.ruff]
+line-length = 100
+extend-select = ["I"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
